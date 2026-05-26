@@ -1,10 +1,15 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -45,14 +50,21 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		respondWithError(w, http.StatusBadRequest, "Unable to parse from file", err)
 		return
 	}
-	mT := header.Header.Get("Content-Type")
 
-	fileData, err := io.ReadAll(file)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Unable to read file", err)
+	defer file.Close()
+
+	mT, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
+	if err != nil || (mT != "image/png" && mT != "image/jpeg") {
+		respondWithError(w, http.StatusUnsupportedMediaType, "wrong thumbnail format", err)
 		return
 	}
-
+	/*
+		fileData, err := io.ReadAll(file)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "Unable to read file", err)
+			return
+		}
+	*/
 	// get video metadata
 	v, err := cfg.db.GetVideo(videoID)
 	if err != nil {
@@ -67,8 +79,22 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		respondWithError(w, http.StatusUnauthorized, "Unauthorized", err)
 		return
 	}
-
-	tURL := fmt.Sprintf("data:%s;base64,%s", mT, base64.StdEncoding.EncodeToString(fileData))
+	randomBytes := make([]byte, 32)
+	rand.Read(randomBytes)
+	randomString := base64.RawURLEncoding.EncodeToString(randomBytes)
+	fileExtension := strings.Split(mT, "/")[1]
+	fP := filepath.Join(cfg.assetsRoot, randomString) + "." + fileExtension
+	newFile, err := os.Create(fP)
+	if err != nil {
+		respondWithError(w, 500, "cannot create new file", err)
+		return
+	}
+	_, err = io.Copy(newFile, file)
+	if err != nil {
+		respondWithError(w, 500, "something went wrong", err)
+		return
+	}
+	tURL := fmt.Sprintf("http://localhost:%s/assets/%s.%s", cfg.port, randomString, fileExtension)
 
 	v.ThumbnailURL = &tURL
 
