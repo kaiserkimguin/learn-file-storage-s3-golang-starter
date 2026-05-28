@@ -1,8 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"log"
+	"math"
 	"net/http"
+	"os/exec"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
@@ -95,7 +100,13 @@ func (cfg *apiConfig) handlerVideoGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, video)
+	psVideo, err := cfg.dbVideoToSignedVideo(video)
+	if err != nil {
+		respondWithError(w, 500, "unable to get presigned video", err)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, psVideo)
 }
 
 func (cfg *apiConfig) handlerVideosRetrieve(w http.ResponseWriter, r *http.Request) {
@@ -116,5 +127,61 @@ func (cfg *apiConfig) handlerVideosRetrieve(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	for i, v := range videos {
+		videos[i], err = cfg.dbVideoToSignedVideo(v)
+		if err != nil {
+			respondWithError(w, 500, "unable to get presigned url", err)
+			return
+		}
+	}
+
 	respondWithJSON(w, http.StatusOK, videos)
+}
+
+func getVideoAspectRatio(filePath string) (string, error) {
+	cmd := exec.Command("ffprobe", "-v", "error", "-print_format", "json", "-show_streams", filePath)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	log.Printf("running command 'ffprobe -v error -print_format json -show_streams filePath'...")
+	err := cmd.Run()
+	log.Printf("command finished with error: %v", err)
+
+	// unmarshal the output of .run to a JSON struct
+	type VideoFormat struct {
+		Width  int `json:"width"`
+		Height int `json:"height"`
+	}
+	type Data struct {
+		Streams []VideoFormat `json:"streams"`
+	}
+	var data Data
+	err = json.Unmarshal(buf.Bytes(), &data)
+	if err != nil {
+		return "", errors.New("unable to unmarshal data")
+	}
+	// calculate format of video
+	ratio := float64(data.Streams[0].Width) / float64(data.Streams[0].Height)
+	h := float64(9)
+	w := float64(16)
+	ls := w / h
+	pt := h / w
+	if almostEqual(ratio, ls, 0.1) {
+		return "landscape", nil
+	} else if almostEqual(ratio, pt, 0.1) {
+		return "portrait", nil
+	} else {
+		return "", errors.New("unknown format")
+	}
+}
+
+func almostEqual(num1, num2, tolerance float64) bool {
+	return math.Abs(num1-num2) <= tolerance
+}
+
+func processVideoForFastStart(filePath string) (string, error) {
+	outputFilePath := filePath + ".processing"
+	cmd := exec.Command("ffmpeg", "-i", filePath, "-c", "copy", "-movflags", "faststart", "-f", "mp4", outputFilePath)
+	log.Printf("running command 'ffmpeg -i <filePath> -c copy -moveflags faststart -f mp4 <outputFilePath>'")
+	err := cmd.Run()
+	return outputFilePath, err
 }
